@@ -1,0 +1,343 @@
+#Load Libraries: p_load can install, load,  and update packages
+if(require("pacman")=="FALSE"){
+  install.packages("pacman")
+} 
+
+pacman::p_load(corrplot, ggplot2,caret, dunn.test, Hmisc,xtable, htmlTable, partykit)
+
+# Load Data 
+setwd("C:/PABLO/Ubiqum/Section2/Task3")
+Existing<-read.csv("existingproductattributes2017.2.csv")
+
+
+ ## QUALITATIVE ANALYSIS ## 
+
+# Product Num. It's only an identifier which doesn't add value.
+Existing$ProductNum<-NULL
+
+#Best Seller Rank. It has many missing values (15). We can't impute them
+# because of the size of the sample. 
+sum(is.na(Existing$BestSellersRank))
+Existing$BestSellersRank<-NULL
+
+# 5 Stars Review:It has a perfect collinearity (cor=1) with the volume.
+# We suspect any kind of error at the time of data collection.
+Existing$x5StarReviews<-NULL
+
+# Remove the repeated Extended Warranties (8-->7) with median(Price)
+
+      ## CLEANING DATA
+
+# Remove Outliers. We identify 2 outliers visualizing the target variable (Volume). 
+ggplot(Existing, aes(x=Volume)) + 
+      geom_histogram(aes(y=..density..), bindwidth =0.5, colour = "blue", fill = "white") + 
+      geom_density( alpha =0.2, fill = "#FF6666")+
+      geom_vline( aes(xintercept=median(Volume), color="red"), linetype ="dashed", size = 1)
+
+# We remove them (those with a volume >6000)
+Existing<- Existing[!Existing$Volume>6000,]
+
+      ## VISUALIZE DISTRIBUTION OF THE DATA
+
+# Visualize the distribution of our target variable and its relation with the other features. 
+for(i in 1:ncol(Existing)) {
+  
+  if (names(Existing[i]) == "Volume"){
+    p1<-ggplot(Existing, aes(x=Volume)) + 
+      geom_histogram(aes(y=..density..), bindwidth =0.5, colour = "blue", fill = "white") + 
+      geom_density( alpha =0.2, fill = "#FF6666")+
+      geom_vline( aes(xintercept=median(Volume), color="red"), linetype ="dashed", size = 1)
+    print("Plot Volume")
+    print(p1)
+    
+  } else if (is.numeric(Existing[[i]]) == "TRUE"){
+    p1<-ggplot(Existing, aes(x=Volume, y=Existing[[i]])) +
+      geom_point(position=position_jitter()) + geom_smooth() +labs(y=colnames(Existing[i]))
+    print(paste("Plot Volume-", colnames(Existing[i])))
+    print(p1)
+  } else {
+    p1<- ggplot(Existing, aes(x=ProductType, fill=ProductType)) + geom_bar () + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+    print(paste("Plot ProductType"))
+    print(p1)
+  }
+}
+
+      ## STATISTICAL ANALYSIS
+
+# Relation Volume-ProductType. We can't do this because we have very few types of each product, 
+# but the process would be the next one. 
+
+#Kruskal-Wallis (since the distribution is non-normal)
+kruskal.test(Volume ~ ProductType, data = Existing) 
+
+# If we have an statistically significant difference, we carry out a post hoc test, for example 
+# the Dunn's test, to confirm where the differences occurred.
+
+Methods<-c("none", "bonferroni", "sidak", "holm", "hs", "hochberg", "bh", "by")
+
+MethodFunction<-function(x){
+  MatrixTest<-matrix(nrow=66)
+  for (i in x){
+    MatrixTest<-cbind(MatrixTest,dunn.test(Existing$Volume, Existing$ProductType, method=(i),kw=TRUE, 
+                                           list=TRUE)$P.adjusted)
+  }
+  return(MatrixTest)
+}
+
+MatrixResults<-MethodFunction(Methods)
+
+colnames(MatrixResults)<-c("NA","none", "bonferroni", "sidak", "holm", "hs", "hochberg", "bh", "by")
+rownames(MatrixResults)<-dunn.test(Existing$Volume, Existing$ProductType, method="none", kw=TRUE, 
+                                   list=TRUE)$comparisons
+MatrixResults<-round(MatrixResults, digits = 3)
+
+# Dummify product type and carry out correlations between all the variables for removing redundance.
+Dummify <- dummyVars(" ~ .", data = Existing)
+ExistingDum <- data.frame(predict(Dummify, newdata = Existing))
+
+# Decision Tree for knowing the relevant variables 
+tree <-ctree(Volume~., ExistingDum, control = ctree_control(maxdepth = 6))
+plot(tree)
+
+# Correlations using a heat map
+MatrixCor <- rcorr(as.matrix(ExistingDum))
+MatrixCor <- MatrixCor$r
+MatrixCor <- MatrixCor$P
+corrplot(MatrixCor, type = "upper", order = "hclust", 
+         MatrixCor = MatrixCor, sig.level = 0.05, insig = "blank",
+         tl.srt=45, tl.cex = 0.7, tl.col="black")
+
+# Correlation matrix with p-values
+corpvalue <-function(x){
+  #Compute correlation matrix
+  require(Hmisc)
+  x <- as.matrix(x)
+  correlation_matrix<-rcorr(x, type="pearson")
+  R <- correlation_matrix$r # Matrix of correlation coeficients
+  p <- correlation_matrix$P # Matrix of p-value 
+  
+  ## Define notions for significance levels; spacing is important.
+  mystars <- ifelse(p < .0001, "****", ifelse(p < .001, "*** ", ifelse(p < .01, "**  ", ifelse(p < .05, "*   ", "    "))))
+  
+  ## trunctuate the correlation matrix to two decimal
+  R <- format(round(cbind(rep(-1.11, ncol(x)), R), 2))[,-1]
+  
+  ## build a new matrix that includes the correlations with their apropriate stars
+  Rnew <- matrix(paste(R, mystars, sep=""), ncol=ncol(x))
+  diag(Rnew) <- paste(diag(R), " ", sep="")
+  rownames(Rnew) <- c("Accesories", "Display", "ExtWarranty", "GameConsole", "Laptop", "Netbook", 
+                      "PC", "Printer", "PrinterSup", "Smartphone", "Software", "Tablet", "Price", 
+                      "4Star", "3Star", "2star", "1Star", "PosRev", "NegRew", "RecomProd", "ShipWeig", 
+                      "Depth", "Width", "Height", "ProfMarg", "Volume")
+  colnames(Rnew) <- c("Accesories", "Display", "ExtWarranty", "GameConsole", "Laptop", "Netbook", 
+                      "PC", "Printer", "PrinterSup", "Smartphone", "Software", "Tablet", "Price", 
+                      "4Star", "3Star", "2star", "1Star", "PosRev", "NegRew", "RecomProd", "ShipWeig", 
+                      "Depth", "Width", "Height", "ProfMarg", "Volume")
+  
+  ## remove upper triangle of correlation matrix
+  Rnew <- as.matrix(Rnew)
+  Rnew[upper.tri(Rnew, diag = TRUE)] <- ""
+  Rnew <- as.data.frame(Rnew)
+
+  ## remove last column and return the correlation matrix
+  Rnew <- cbind(Rnew[1:length(Rnew)-1])
+  print(xtable(Rnew), type="html")
+} 
+
+MatrixCorP<-corpvalue(ExistingDum)
+MatrixCorP<-htmlTable(MatrixCorP)
+MatrixCorP
+
+# Remove Variables 
+# x1StarReviews (Cor with x2StarReviews=0.98)
+# x3StarReviews (Cor with x2StarReviews=0.91)
+# NegativeReview (Cor with x2StarReviews=0.89)
+# ProductType.Printer    (Cor with ShippingWeight=0.75)
+
+ExistingDum$x1StarReviews<-NULL
+ExistingDum$x3StarReviews<-NULL
+ExistingDum$NegativeServiceReview<-NULL
+ExistingDum$ProductType.Printer<-NULL
+
+
+# Cross validation
+fitControlKNN <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+fitControlRF  <- trainControl(method = "repeatedcv", number = 10, repeats = 2)
+fitControlSVM <- trainControl(method="repeatedcv", number = 10, repeats = 2)
+fitControlGBM <- trainControl(method="repeatedcv", number = 10, repeats = 2)
+
+# Create the variables vector
+Variables<-c(Volume~x4StarReviews+PositiveServiceReview,
+             Volume~x4StarReviews+x2StarReviews,
+             Volume~x2StarReviews+PositiveServiceReview,
+             Volume~x4StarReviews+PositiveServiceReview+x2StarReviews,
+             Volume~x4StarReviews+PositiveServiceReview+ProductDepth,
+             Volume~x4StarReviews+PositiveServiceReview+ShippingWeight)
+
+PredVolFun<-function(x){
+  DFResults<-as.data.frame(matrix(0, ncol = 9, nrow = 1)) 
+  colnames(DFResults)<-c("Variables", "Model", "RSquared", "RMSE", "ProductType", "Price", "SalesVolume", "PredSalesVolume", "NewSalesVolume")
+
+  for (i in x){
+    RFRSquared<-c()
+    KNNRSquared<-c()
+    SVMRSquared<-c()
+    GBMRSquared<-c()
+    RFRMSE<-c()
+    KNNRMSE<-c()
+    SVMRMSE<-c()
+    GBMRMSE<-c()
+    RFSalesPred<-matrix(ncol=1, nrow=71)
+    KNNSalesPred<-matrix(ncol=1, nrow=71)
+    SVMSalesPred<-matrix(ncol=1, nrow=71)
+    GBMSalesPred<-matrix(ncol=1, nrow=71)
+    RFNewSalesPred<-matrix(ncol=1,nrow=24)
+    KNNNewSalesPred<-matrix(ncol=1,nrow=24)
+    SVMNewSalesPred<-matrix(ncol=1,nrow=24)
+    GBMNewSalesPred<-matrix(ncol=1,nrow=24)
+
+    print(i)
+    k=1
+    
+    for(j in seq(1,100)){
+         print(k)
+      
+        # Generate a bootstrap sample with replacement
+        indices <- sample(nrow(ExistingDum),replace=TRUE)
+        
+        # Generate training dataset using a bootstrap sample
+        training <- ExistingDum[indices,]
+        
+        # Generate testing dataset (i.e., instances that 
+        # are not included in the bootstrap sample)
+        testing <- ExistingDum[-unique(indices),]  
+        
+        # RANDOM FOREST
+        print("RF")
+        RF<-train((i), data= training, method="parRF", trControl=fitControlRF,metric="Rsquared", 
+                           ntree=50,tuneGrid=expand.grid(.mtry=c(3)))
+  
+        predictions<-predict(RF, testing)
+        RpostRes<-postResample(predictions, testing$Volume)
+        
+        RFRSquared<-union(RFRSquared,RpostRes[[2]])
+        RFRMSE<-union(RFRMSE,RpostRes[[1]])
+        print(RFRSquared)
+        print(RFRMSE)
+        
+        salesvolume<-as.numeric(predict(RF,newdata = Existing))
+        #print(salesvolume)
+        RFSalesPred<-cbind(RFSalesPred, salesvolume)
+        #print(RFSalesPred)
+        
+        newsalesvolume<-as.numeric(predict(RF,newdata = New))
+        #print(newsalesvolume)
+        RFNewSalesPred<-cbind(RFNewSalesPred, newsalesvolume)
+        #print(RFNewSalesPred)        
+        
+        # KNN
+        print("KNN")
+        KNN<-train((i), data= training, method="knn", trControl=fitControlKNN,metric="Rsquared",
+                           preProcess=c("center", "scale"), tuneLength=10, tuneGrid=expand.grid(.k=1:10))
+
+        predictions<-predict(KNN, testing)
+        RpostRes<-postResample(predictions, testing$Volume)
+        
+        KNNRSquared<-union(KNNRSquared,RpostRes[[2]])
+        KNNRMSE<-union(KNNRMSE,RpostRes[[1]])
+        print(KNNRSquared)
+        print(KNNRMSE)
+        
+        salesvolume<-predict(KNN,newdata = Existing)
+        #print(salesvolume)
+        KNNSalesPred<-cbind(KNNSalesPred, salesvolume)
+        #print(KNNSalesPred)
+        
+        newsalesvolume<-as.numeric(predict(KNN,newdata = New))
+        #print(newsalesvolume)
+        KNNNewSalesPred<-cbind(KNNNewSalesPred, newsalesvolume)
+        #print(KNNNewSalesPred)  
+
+        # #SVM
+        print("SVM")
+        SVM<-train((i),data=training,method = "svmRadial",trControl=fitControlSVM,metric="Rsquared",
+                            preProc = c("center","scale"), tuneLength = 10,
+                            ranges = list(epsilon = seq(0,0.2,0.01), cost = 2^(2:9)))
+        
+        predictions<-predict(SVM, testing)
+        RpostRes<-postResample(predictions, testing$Volume)
+        
+        SVMRSquared<-union(SVMRSquared,RpostRes[[2]])
+        SVMRMSE<-union(SVMRMSE,RpostRes[[1]])
+        print(SVMRSquared)
+        print(SVMRMSE)
+        
+        salesvolume<-predict(SVM,newdata = Existing)
+        #print(salesvolume)
+        SVMSalesPred<-cbind(SVMSalesPred, salesvolume)
+        #print(SVMSalesPred)
+        
+        newsalesvolume<-as.numeric(predict(SVM,newdata = New))
+        #print(newsalesvolume)
+        SVMNewSalesPred<-cbind(SVMNewSalesPred, newsalesvolume)
+        #print(SVMNewSalesPred)  
+        
+
+        #GBM
+        print("GBM")
+        GBM<-train((i), data= training, method="gbm", trControl=fitControlGBM, metric="Rsquared",
+                           tuneLength = 10, verbose=FALSE)
+        
+        predictions<-predict(GBM, testing)
+        RpostRes<-postResample(predictions, testing$Volume)
+        
+        GBMRSquared<-union(GBMRSquared,RpostRes[[2]])
+        GBMRMSE<-union(GBMRMSE,RpostRes[[1]])
+        print(GBMRSquared)
+        print(GBMRMSE)
+        
+        salesvolume<-predict(GBM,newdata = Existing)
+        #print(salesvolume)
+        GBMSalesPred<-cbind(GBMSalesPred, salesvolume)
+        #print(GBMSalesPred)
+        
+        newsalesvolume<-as.numeric(predict(GBM,newdata = New))
+        #print(newsalesvolume)
+        GBMNewSalesPred<-cbind(GBMNewSalesPred, newsalesvolume)
+        #print(GBMNewSalesPred)  
+
+        k<-k+1
+    }
+    
+    colnames(DFResults)<-c("Variables", "Model", "RSquared", "RMSE", "ProductType", "Price","SalesVolume", "PredSalesVolume", "NewSalesVolume")
+    ProductType<-as.character(Existing$ProductType)
+    Price<-as.numeric(Existing$Price)
+    
+    RFSalesPred<-list(round(rowMeans(RFSalesPred, na.rm = TRUE), digits=0))
+    RFNewSalesPred<-list(round(rowMeans(RFNewSalesPred, na.rm = TRUE), digits=0))
+    FinalResultRF<-c((i), 1, round(mean(RFRSquared), digits=3), round(mean(RFRMSE), digits=3), list(ProductType), list(Price), list(Existing$Volume), RFSalesPred, RFNewSalesPred)
+    FinalResultRF<-as.character(FinalResultRF)
+    DFResults<-rbind(DFResults, FinalResultRF)
+    
+    KNNSalesPred<-list(round(rowMeans(KNNSalesPred, na.rm = TRUE), digits=0))
+    KNNNewSalesPred<-list(round(rowMeans(KNNNewSalesPred, na.rm = TRUE), digits=0))
+    FinalResultKNN<-c((i), 2, round(mean(KNNRSquared), digits=3), round(mean(KNNRMSE), digits=3), list(ProductType),list(Price), list(Existing$Volume), KNNSalesPred, KNNNewSalesPred)
+    FinalResultKNN<-as.character(FinalResultKNN)
+    DFResults<-rbind(DFResults, FinalResultKNN)
+    
+    SVMSalesPred<-list(round(rowMeans(SVMSalesPred, na.rm = TRUE), digits=0))
+    SVMNewSalesPred<-list(round(rowMeans(SVMNewSalesPred, na.rm = TRUE), digits=0))
+    FinalResultSVM<-c((i), 3, round(mean(SVMRSquared), digits=3), round(mean(SVMRMSE), digits=3),list(ProductType), list(Price),list(Existing$Volume), SVMSalesPred, SVMNewSalesPred)
+    FinalResultSVM<-as.character(FinalResultSVM)
+    DFResults<-rbind(DFResults, FinalResultSVM)
+    
+    GBMSalesPred<-list(round(rowMeans(GBMSalesPred, na.rm = TRUE), digits=0))
+    GBMNewSalesPred<-list(round(rowMeans(GBMNewSalesPred, na.rm = TRUE), digits=0))
+    FinalResultGBM<-c((i), 4, round(mean(GBMRSquared), digits=3), round(mean(GBMRMSE), digits=3),list(ProductType), list(Price),list(Existing$Volume), GBMSalesPred, GBMNewSalesPred)
+    FinalResultGBM<-as.character(FinalResultGBM)
+    DFResults<-rbind(DFResults, FinalResultGBM)
+  }
+  return(DFResults)
+}
+
+MightyFinalDataFrame<-PredVolFun(Variables)
